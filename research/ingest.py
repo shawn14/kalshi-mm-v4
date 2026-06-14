@@ -2,8 +2,6 @@
 
 Reads the same format ingest_daily.py writes on the VM:
   {ticker, series, candles: [{ts, ya_o, ya_c, yb_o, yb_c, vol}], ...}
-
-Run once to backfill from existing files on VM, then daily via cron.
 """
 from __future__ import annotations
 
@@ -12,73 +10,79 @@ import json
 import logging
 from pathlib import Path
 
-import duckdb
+import pandas as pd
 
 from research.db import connect, init_schema
 
 log = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/candles")   # mirrors VM's research/data/
-
-
-def ingest_file(con: duckdb.DuckDBPyConnection, path: Path) -> int:
-    rows = []
-    series = path.parent.name
-    with gzip.open(path) as f:
-        for line in f:
-            m = json.loads(line)
-            ticker = m.get("ticker", "")
-            if not ticker:
-                continue
-            for c in m.get("candles", []):
-                ybo = c.get("yb_o")
-                ybc = c.get("yb_c")
-                yao = c.get("ya_o")
-                yac = c.get("ya_c")
-                if ybo is None:
-                    continue
-                rows.append({
-                    "ticker": ticker,
-                    "series": series,
-                    "ts": int(c["ts"]),
-                    "open_time": m.get("open_time"),
-                    "close_time": m.get("close_time"),
-                    "result": m.get("result"),
-                    "yes_bid_open": float(ybo),
-                    "yes_bid_close": float(ybc) if ybc is not None else None,
-                    "yes_ask_open": float(yao) if yao is not None else None,
-                    "yes_ask_close": float(yac) if yac is not None else None,
-                    "volume_usd": float(c.get("vol", 0) or 0),
-                    "title": m.get("title"),
-                })
-    if not rows:
-        return 0
-    con.executemany("""
-        INSERT OR IGNORE INTO candles
-          (ticker, series, ts, open_time, close_time, result,
-           yes_bid_open, yes_bid_close, yes_ask_open, yes_ask_close,
-           volume_usd, title)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [[r["ticker"], r["series"], r["ts"], r["open_time"], r["close_time"],
-           r["result"], r["yes_bid_open"], r["yes_bid_close"],
-           r["yes_ask_open"], r["yes_ask_close"], r["volume_usd"], r["title"]]
-          for r in rows])
-    return len(rows)
+DATA_DIR = Path("data/candles")
 
 
 def ingest_all(data_dir: Path = DATA_DIR) -> None:
     con = connect()
     init_schema(con)
-    total = 0
+
+    rows = []
     for series_dir in sorted(data_dir.iterdir()):
         if not series_dir.is_dir():
             continue
+        series = series_dir.name
         for gz in sorted(series_dir.glob("*.jsonl.gz")):
-            n = ingest_file(con, gz)
-            total += n
-            if n:
-                log.info("  %s/%s → %d rows", series_dir.name, gz.name, n)
-    log.info("Ingest complete: %d total candle rows", total)
+            with gzip.open(gz) as f:
+                for line in f:
+                    try:
+                        m = json.loads(line)
+                    except Exception:
+                        continue
+                    ticker = m.get("ticker", "")
+                    if not ticker:
+                        continue
+                    result = m.get("result")
+                    open_time = m.get("open_time")
+                    close_time = m.get("close_time")
+                    title = m.get("title")
+                    for c in m.get("candles", []):
+                        ybo = c.get("yb_o")
+                        if ybo is None:
+                            continue
+                        rows.append({
+                            "ticker": ticker,
+                            "series": series,
+                            "ts": int(c["ts"]),
+                            "open_time": open_time,
+                            "close_time": close_time,
+                            "result": result,
+                            "yes_bid_open": float(ybo),
+                            "yes_bid_close": float(c["yb_c"]) if c.get("yb_c") is not None else None,
+                            "yes_ask_open": float(c["ya_o"]) if c.get("ya_o") is not None else None,
+                            "yes_ask_close": float(c["ya_c"]) if c.get("ya_c") is not None else None,
+                            "volume_usd": float(c.get("vol") or 0),
+                            "title": title,
+                        })
+        log.info("  %s: %d rows so far", series, len(rows))
+
+    log.info("Parsed %d rows — bulk loading into DuckDB via DataFrame...", len(rows))
+
+    df = pd.DataFrame(rows)
+
+    # DuckDB can read a registered DataFrame directly — much faster than executemany
+    con.register("_stage", df)
+    con.execute("""
+        INSERT INTO candles
+        SELECT ticker, series, ts, open_time, close_time, result,
+               yes_bid_open, yes_bid_close, yes_ask_open, yes_ask_close,
+               volume_usd, title
+        FROM _stage
+        WHERE NOT EXISTS (
+            SELECT 1 FROM candles c
+            WHERE c.ticker = _stage.ticker AND c.ts = _stage.ts
+        )
+    """)
+    con.unregister("_stage")
+
+    count = con.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
+    log.info("Ingest complete: %d total rows in candles table", count)
     con.close()
 
 
