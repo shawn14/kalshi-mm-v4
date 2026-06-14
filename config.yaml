@@ -1,0 +1,30 @@
+mm:
+  series:
+    - KXMLBKS      # MLB pitcher strikeouts — primary, proven spread
+    - KXNBAPTS     # NBA player points — seasonal (Oct-Apr)
+  base_half_spread_c: 3.0     # cents from mid to our quote
+  min_spread_c: 7.0           # natural spread gate
+  game_tail_min: 150.0        # stop quoting < 150 min before market close
+  reprice_threshold_c: 2.0    # cancel+replace when mid moves this far
+
+risk:
+  max_active_tickers: 25
+  max_contracts_per_order: 2
+  max_net_contracts_per_ticker: 5
+  max_gross_contracts_per_ticker: 10
+  taker_cover_threshold: 8         # net contracts before taker hedge
+  max_exposure_pct: 0.50           # max % of capital at risk
+  max_daily_loss_pct: 0.10         # circuit breaker
+
+research:
+  min_volume_usd: 100.0
+  wilson_z: 1.96                   # 95% CI
+  min_trades_for_verdict: 50
+  paper_fill_mode: conservative    # 'conservative' | 'aggressive'
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8080
+
+alerts:
+  telegram: true

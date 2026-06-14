@@ -1,0 +1,17 @@
+.env
+*.pem
+venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+trading_log/
+data/
+.DS_Store
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+# frontend/out/ is committed — deployed as static build to VM

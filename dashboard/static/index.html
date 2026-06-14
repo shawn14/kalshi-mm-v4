@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Kalshi MM v4</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0f; color: #e2e8f0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+  .header { background: #12121a; border-bottom: 1px solid #1e1e2e; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+  .logo { font-size: 15px; font-weight: 700; color: #7c3aed; letter-spacing: 0.05em; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot-live { background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 2s infinite; }
+  .dot-paper { background: #f59e0b; }
+  .dot-off { background: #6b7280; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .tabs { display: flex; background: #12121a; border-bottom: 1px solid #1e1e2e; overflow-x: auto; }
+  .tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: #6b7280; white-space: nowrap; }
+  .tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+  .page { display: none; padding: 12px; }
+  .page.active { display: block; }
+  .card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .card-title { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+  .metric { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid #1a1a2e; }
+  .metric:last-child { border-bottom: none; }
+  .metric-label { color: #94a3b8; }
+  .metric-value { font-weight: 600; }
+  .green { color: #22c55e; }
+  .red { color: #ef4444; }
+  .yellow { color: #f59e0b; }
+  .purple { color: #7c3aed; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+  .stat-box { background: #12121a; border: 1px solid #1e1e2e; border-radius: 8px; padding: 12px; text-align: center; }
+  .stat-num { font-size: 22px; font-weight: 700; margin-bottom: 2px; }
+  .stat-label { font-size: 10px; color: #6b7280; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { text-align: left; color: #6b7280; padding: 6px 4px; border-bottom: 1px solid #1e1e2e; font-weight: 500; }
+  td { padding: 6px 4px; border-bottom: 1px solid #12121a; }
+  tr:hover td { background: #16162a; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+  .badge-pass { background: #14532d; color: #22c55e; }
+  .badge-fail { background: #450a0a; color: #ef4444; }
+  .badge-insuf { background: #1c1917; color: #78716c; }
+  .badge-live { background: #1e1b4b; color: #818cf8; }
+  .badge-paper { background: #292524; color: #a3a3a3; }
+  .btn { padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; width: 100%; margin-bottom: 8px; font-family: inherit; }
+  .btn-kill { background: #7f1d1d; color: #fca5a5; }
+  .btn-kill:hover { background: #991b1b; }
+  .btn-resume { background: #14532d; color: #86efac; }
+  .btn-live { background: #7c3aed; color: #fff; }
+  .btn-live:hover { background: #6d28d9; }
+  .btn-paper { background: #1c1917; color: #a3a3a3; border: 1px solid #292524; }
+  .orders-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #1a1a2e; font-size: 11px; }
+  .inv-bar-wrap { background: #1a1a2e; border-radius: 3px; height: 6px; margin-top: 4px; overflow: hidden; }
+  .inv-bar { height: 100%; border-radius: 3px; transition: width 0.3s; }
+  .inv-pos { background: #22c55e; }
+  .inv-neg { background: #ef4444; margin-left: auto; }
+  .input-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  input[type=number] { background: #1a1a2e; border: 1px solid #2d2d44; color: #e2e8f0; padding: 8px 10px; border-radius: 6px; font-family: inherit; font-size: 13px; flex: 1; }
+  .confirm-box { background: #1c0a2e; border: 1px solid #4c1d95; border-radius: 8px; padding: 14px; margin-bottom: 10px; display: none; }
+  .confirm-box.show { display: block; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">KALSHI MM v4</div>
+  <div id="hdr-status"><span class="status-dot dot-off" id="dot"></span><span id="mode-label">LOADING</span></div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('ops')">OPS</div>
+  <div class="tab" onclick="showTab('inventory')">INVENTORY</div>
+  <div class="tab" onclick="showTab('research')">RESEARCH</div>
+  <div class="tab" onclick="showTab('control')">CONTROL</div>
+</div>
+
+<!-- OPS TAB -->
+<div class="page active" id="page-ops">
+  <div class="grid2">
+    <div class="stat-box">
+      <div class="stat-num green" id="pnl">—</div>
+      <div class="stat-label">Session P&L</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num purple" id="orders-count">—</div>
+      <div class="stat-label">Active Orders</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" id="tickers-count">—</div>
+      <div class="stat-label">Active Tickers</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" id="capital">—</div>
+      <div class="stat-label">Capital</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Active Quotes</div>
+    <div id="quotes-list"><div style="color:#6b7280;font-size:11px">No active quotes</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">System</div>
+    <div class="metric"><span class="metric-label">Exchange</span><span class="metric-value" id="exch-status">—</span></div>
+    <div class="metric"><span class="metric-label">Engine</span><span class="metric-value" id="engine-status">—</span></div>
+    <div class="metric"><span class="metric-label">Circuit Breaker</span><span class="metric-value" id="cb-status">—</span></div>
+    <div class="metric"><span class="metric-label">Kill Switch</span><span class="metric-value" id="ks-status">—</span></div>
+    <div class="metric"><span class="metric-label">Last update</span><span class="metric-value" id="last-ts" style="font-size:10px">—</span></div>
+  </div>
+</div>
+
+<!-- INVENTORY TAB -->
+<div class="page" id="page-inventory">
+  <div class="card">
+    <div class="card-title">Book Inventory</div>
+    <div id="inventory-list"><div style="color:#6b7280;font-size:11px">No positions</div></div>
+  </div>
+</div>
+
+<!-- RESEARCH TAB -->
+<div class="page" id="page-research">
+  <div class="card">
+    <div class="card-title">Paper Trade Performance</div>
+    <div class="grid2">
+      <div class="stat-box">
+        <div class="stat-num" id="paper-n">—</div>
+        <div class="stat-label">Paper Fills</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num" id="paper-wr">—</div>
+        <div class="stat-label">Win Rate</div>
+      </div>
+    </div>
+    <div class="metric"><span class="metric-label">Total P&L</span><span class="metric-value" id="paper-pnl">—</span></div>
+    <div class="metric"><span class="metric-label">Avg P&L/fill</span><span class="metric-value" id="paper-avg">—</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Backtest Results</div>
+    <div style="margin-bottom:8px">
+      <button class="btn" style="background:#1e1b4b;color:#818cf8;width:auto;padding:6px 14px" onclick="runBacktest()">Run Full Sweep</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Series</th><th>n</th><th>WR</th><th>EV</th><th>LB</th><th>LB H1</th><th>LB H2</th><th>Verdict</th>
+        </tr></thead>
+        <tbody id="bt-tbody">
+          <tr><td colspan="8" style="color:#6b7280">No results yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- CONTROL TAB -->
+<div class="page" id="page-control">
+  <div class="card">
+    <div class="card-title">Mode</div>
+    <div id="mode-status" style="padding:8px 0;font-size:15px">—</div>
+  </div>
+
+  <div id="confirm-live" class="confirm-box">
+    <div style="color:#f59e0b;margin-bottom:10px;font-size:12px">WARNING: This will place REAL orders with REAL money.</div>
+    <div class="input-row">
+      <span style="color:#94a3b8">Capital $</span>
+      <input type="number" id="capital-input" value="1000" min="100" max="1000000">
+    </div>
+    <button class="btn btn-live" onclick="confirmGoLive()">CONFIRM GO LIVE</button>
+    <button class="btn btn-paper" onclick="document.getElementById('confirm-live').classList.remove('show')">Cancel</button>
+  </div>
+
+  <button class="btn btn-live" id="btn-golive" onclick="document.getElementById('confirm-live').classList.toggle('show')">Go Live</button>
+  <button class="btn btn-paper" onclick="goPaper()">Return to Paper</button>
+  <button class="btn btn-kill" onclick="killSwitch()">KILL SWITCH</button>
+  <button class="btn btn-resume" onclick="resumeTrading()">Resume Trading</button>
+</div>
+
+<script>
+var activeTab = 'ops';
+
+function showTab(t) {
+  document.querySelectorAll('.tab').forEach(function(el) { el.classList.remove('active'); });
+  document.querySelectorAll('.page').forEach(function(el) { el.classList.remove('active'); });
+  event.target.classList.add('active');
+  document.getElementById('page-' + t).classList.add('active');
+  activeTab = t;
+}
+
+function fmt(v, unit) {
+  if (v === null || v === undefined) return '--';
+  if (unit === '$') return '$' + v.toFixed(2);
+  if (unit === '%') return (v * 100).toFixed(1) + '%';
+  if (unit === 'c') return v.toFixed(2) + 'c';
+  return v;
+}
+
+function colorClass(v, threshold) {
+  if (v === null || v === undefined) return '';
+  return v >= threshold ? 'green' : 'red';
+}
+
+async function fetchState() {
+  try {
+    var [state, quotes, sys, paper, inv] = await Promise.all([
+      fetch('/api/mm/state').then(function(r) { return r.json(); }),
+      fetch('/api/mm/quotes').then(function(r) { return r.json(); }),
+      fetch('/api/system/status').then(function(r) { return r.json(); }),
+      fetch('/api/research/paper').then(function(r) { return r.json(); }),
+      fetch('/api/mm/inventory').then(function(r) { return r.json(); }),
+    ]);
+    updateOps(state, quotes, sys);
+    updateInventory(inv);
+    updatePaper(paper);
+    updateMode(sys);
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+function updateOps(state, quotes, sys) {
+  var pnl = state.session_pnl_usd || 0;
+  var pnlEl = document.getElementById('pnl');
+  pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+  pnlEl.className = 'stat-num ' + (pnl >= 0 ? 'green' : 'red');
+
+  document.getElementById('orders-count').textContent = state.active_orders || 0;
+  document.getElementById('tickers-count').textContent = state.active_tickers || 0;
+  document.getElementById('capital').textContent = state.capital_usd ? '$' + state.capital_usd.toFixed(0) : '--';
+
+  var ordersHtml = '';
+  var orders = quotes.orders || [];
+  if (orders.length === 0) {
+    ordersHtml = '<div style="color:#6b7280;font-size:11px">No active quotes</div>';
+  } else {
+    orders.slice(0, 30).forEach(function(o) {
+      var col = o.side === 'yes' ? 'green' : 'red';
+      ordersHtml += '<div class="orders-row">' +
+        '<span style="color:#94a3b8">' + o.ticker.substring(0, 28) + '</span>' +
+        '<span class="' + col + '">' + o.side.toUpperCase() + ' @' + o.price_c + 'c</span>' +
+        '</div>';
+    });
+  }
+  document.getElementById('quotes-list').innerHTML = ordersHtml;
+
+  var running = sys.engine_running;
+  var killed = sys.kill_switch;
+  var cb = sys.circuit_breaker;
+  var dot = document.getElementById('dot');
+  var label = document.getElementById('mode-label');
+  if (killed || cb) {
+    dot.className = 'status-dot dot-off';
+    label.textContent = killed ? 'KILLED' : 'BREAKER';
+  } else if (sys.paper_mode) {
+    dot.className = 'status-dot dot-paper';
+    label.textContent = 'PAPER';
+  } else if (running) {
+    dot.className = 'status-dot dot-live';
+    label.textContent = 'LIVE';
+  } else {
+    dot.className = 'status-dot dot-off';
+    label.textContent = 'STOPPED';
+  }
+
+  document.getElementById('engine-status').textContent = running ? 'Running' : 'Stopped';
+  document.getElementById('engine-status').className = 'metric-value ' + (running ? 'green' : 'red');
+  document.getElementById('cb-status').textContent = cb ? 'TRIPPED' : 'OK';
+  document.getElementById('cb-status').className = 'metric-value ' + (cb ? 'red' : 'green');
+  document.getElementById('ks-status').textContent = killed ? 'ACTIVE' : 'Clear';
+  document.getElementById('ks-status').className = 'metric-value ' + (killed ? 'red' : 'green');
+  document.getElementById('last-ts').textContent = sys.ts ? sys.ts.substring(0, 19) + 'Z' : '--';
+}
+
+function updateInventory(data) {
+  var items = (data.inventory || []);
+  if (items.length === 0) {
+    document.getElementById('inventory-list').innerHTML = '<div style="color:#6b7280;font-size:11px">No positions</div>';
+    return;
+  }
+  var html = '';
+  items.forEach(function(i) {
+    var col = i.net_yes > 0 ? 'green' : 'red';
+    var pct = Math.min(Math.abs(i.net_yes) / 10 * 100, 100);
+    html += '<div style="padding:6px 0;border-bottom:1px solid #1a1a2e">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+        '<span style="color:#94a3b8;font-size:11px">' + i.ticker.substring(0, 32) + '</span>' +
+        '<span class="' + col + '">' + (i.net_yes > 0 ? '+' : '') + i.net_yes + ' YES</span>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:10px;color:#6b7280">' +
+        '<span>P&L: ' + i.pnl_c.toFixed(1) + 'c</span>' +
+        '<span>YES fills: ' + i.fills_yes + ' | NO fills: ' + i.fills_no + '</span>' +
+      '</div>' +
+      '<div class="inv-bar-wrap"><div class="inv-bar ' + (i.net_yes >= 0 ? 'inv-pos' : 'inv-neg') + '" style="width:' + pct + '%"></div></div>' +
+    '</div>';
+  });
+  document.getElementById('inventory-list').innerHTML = html;
+}
+
+function updatePaper(p) {
+  document.getElementById('paper-n').textContent = p.n || 0;
+  document.getElementById('paper-wr').textContent = p.win_rate ? (p.win_rate * 100).toFixed(1) + '%' : '--';
+  var pnl = p.total_pnl_c || 0;
+  var pnlEl = document.getElementById('paper-pnl');
+  pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + 'c';
+  pnlEl.className = 'metric-value ' + (pnl >= 0 ? 'green' : 'red');
+  document.getElementById('paper-avg').textContent = p.avg_pnl_c ? p.avg_pnl_c.toFixed(2) + 'c' : '--';
+}
+
+function updateMode(sys) {
+  var el = document.getElementById('mode-status');
+  if (!sys.paper_mode) {
+    el.innerHTML = '<span class="green" style="font-weight:700">LIVE TRADING</span> — Real orders active';
+  } else {
+    el.innerHTML = '<span class="yellow">PAPER MODE</span> — No real orders';
+  }
+}
+
+async function fetchBacktest() {
+  try {
+    var data = await fetch('/api/research/backtest').then(function(r) { return r.json(); });
+    var rows = data.results || [];
+    if (rows.length === 0) {
+      document.getElementById('bt-tbody').innerHTML = '<tr><td colspan="8" style="color:#6b7280">No results yet</td></tr>';
+      return;
+    }
+    var seen = {};
+    var html = '';
+    rows.forEach(function(r) {
+      if (seen[r.series]) return;
+      seen[r.series] = true;
+      var vc = r.verdict === 'PASS' ? 'badge-pass' : r.verdict === 'FAIL' ? 'badge-fail' : 'badge-insuf';
+      html += '<tr>' +
+        '<td>' + r.series + '</td>' +
+        '<td>' + (r.n_trades || 0) + '</td>' +
+        '<td>' + ((r.win_rate || 0) * 100).toFixed(1) + '%</td>' +
+        '<td>' + (r.avg_ev_c || 0).toFixed(2) + 'c</td>' +
+        '<td class="' + (r.wilson_lb > 0 ? 'green' : 'red') + '">' + (r.wilson_lb || 0).toFixed(3) + '</td>' +
+        '<td class="' + (r.wilson_lb_h1 > 0 ? 'green' : 'red') + '">' + (r.wilson_lb_h1 || 0).toFixed(3) + '</td>' +
+        '<td class="' + (r.wilson_lb_h2 > 0 ? 'green' : 'red') + '">' + (r.wilson_lb_h2 || 0).toFixed(3) + '</td>' +
+        '<td><span class="badge ' + vc + '">' + r.verdict + '</span></td>' +
+      '</tr>';
+    });
+    document.getElementById('bt-tbody').innerHTML = html;
+  } catch(e) {}
+}
+
+async function runBacktest() {
+  await fetch('/api/research/run-backtest', {method: 'POST'});
+  alert('Backtest running in background — refresh in 30s');
+}
+
+async function killSwitch() {
+  if (!confirm('Kill all orders and halt trading?')) return;
+  await fetch('/api/mm/kill', {method: 'POST'});
+  fetchState();
+}
+
+async function resumeTrading() {
+  await fetch('/api/mm/resume', {method: 'POST'});
+  fetchState();
+}
+
+async function confirmGoLive() {
+  var cap = parseFloat(document.getElementById('capital-input').value);
+  if (!cap || cap < 100) { alert('Minimum $100'); return; }
+  if (!confirm('GO LIVE with $' + cap + '? This places REAL orders.')) return;
+  await fetch('/api/mm/go-live', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({capital_usd: cap})});
+  document.getElementById('confirm-live').classList.remove('show');
+  fetchState();
+}
+
+async function goPaper() {
+  await fetch('/api/mm/go-paper', {method: 'POST'});
+  fetchState();
+}
+
+// Poll every 2s
+fetchState();
+fetchBacktest();
+setInterval(fetchState, 2000);
+setInterval(fetchBacktest, 30000);
+</script>
+</body>
+</html>
