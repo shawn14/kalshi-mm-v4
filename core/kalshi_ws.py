@@ -89,8 +89,8 @@ class KalshiWS:
 
     async def _connect_and_pump(self) -> None:
         headers = sign_request(self.api_key, self._key, "GET",
-                               "/trade-api/ws/v2")
-        async with websockets.connect(WS_URL, additional_headers=headers,
+                               "/trade-api/ws/v2")  # full path for signing
+        async with websockets.connect(WS_URL, extra_headers=headers,
                                       ping_interval=20) as ws:
             self._ws = ws
             if self._subscribed:

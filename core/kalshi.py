@@ -28,7 +28,8 @@ class KalshiClient:
 
     async def _req(self, method: str, path: str, *, params: dict | None = None,
                    body: dict | None = None) -> dict:
-        sign_path = path  # query string excluded from signature
+        # Kalshi signs the full path including /trade-api/v2 prefix
+        sign_path = f"/trade-api/v2{path}"
         if params:
             path = f"{path}?{urlencode(params)}"
         headers = sign_request(self.api_key, self._key, method.upper(), sign_path)
@@ -46,7 +47,7 @@ class KalshiClient:
         return await self._req("GET", "/exchange/status")
 
     # ── Markets ───────────────────────────────────────────────────────────────
-    async def get_markets(self, series_ticker: str, status: str = "active",
+    async def get_markets(self, series_ticker: str, status: str = "open",
                           limit: int = 200, cursor: str | None = None) -> dict:
         p: dict[str, Any] = {"series_ticker": series_ticker, "status": status,
                               "limit": limit}
