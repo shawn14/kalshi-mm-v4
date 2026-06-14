@@ -1,28 +1,31 @@
-"""Maker backtest — sweep all series, compute EV/WR/Wilson LB.
+"""Maker backtest — sweep all series, compute calibration-based EV.
 
-Simulation: for each candle where spread >= min_spread and mid in zone,
-simulate posting YES bid at (mid - hs) and NO bid at (100 - mid - hs).
-A fill is credited when:
-  - Conservative mode (default): the market eventually closes on the opposite side
-    of the contract, meaning our limit would have been taken (the market moved through).
-  - We collect hs cents if we win (settlement = our side), lose (price - 100) if we lose.
+Simulation model:
+  For each market (game), take the FIRST qualifying candle where:
+    - mid ∈ [mid_lo, mid_hi] (quoting zone)
+    - spread >= min_spread_c
+    - volume >= min_volume_usd (at least some activity)
 
-Wilson 95% CI lower bound validates edge is real, not variance.
-Two-half stability check: both first and second halves must show positive Wilson LB.
+  Simulate buying YES at the natural market bid (yes_bid_open).
+  P&L = (100 - bid - MAKER_FEE_C) if result='yes', else -(bid + MAKER_FEE_C)
+  Break-even WR = (bid + MAKER_FEE_C) / 100
+
+  This tests: does the historical bid price underestimate true win probability?
+  If WR > breakeven → maker edge exists (market underprices YES at this level).
+  If WR < breakeven → adverse selection dominates.
+
+Wilson 95% CI lower bound on excess WR = WR - breakeven_wr.
+Two-half stability: both halves must show positive excess WR.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Iterator
 
-import duckdb
 import numpy as np
-from scipy.stats import norm
+import duckdb
 
 from research.db import connect, init_schema
 
@@ -34,11 +37,11 @@ MAKER_FEE_C = 1.0
 @dataclass
 class BacktestParams:
     series: str
-    half_spread_c: float = 3.0
-    min_spread_c: float = 7.0
+    half_spread_c: float = 3.0   # hs we'd post (for reference)
+    min_spread_c: float = 7.0    # only quote when natural spread is this wide
     mid_lo: float = 40.0
     mid_hi: float = 60.0
-    min_volume_usd: float = 100.0
+    min_volume_usd: float = 50.0
 
 
 @dataclass
@@ -48,12 +51,16 @@ class BacktestResult:
     n_markets: int
     n_trades: int
     win_rate: float
+    avg_bid_c: float        # average fill price
+    breakeven_wr: float     # avg bid / 100
     avg_ev_c: float
     total_pnl_c: float
     wilson_lb: float
     wilson_lb_h1: float
     wilson_lb_h2: float
-    verdict: str  # "PASS" | "FAIL" | "INSUFFICIENT"
+    verdict: str            # "PASS" | "FAIL" | "INSUFFICIENT"
+    avg_spread_c: float = 0.0
+    pct_in_zone: float = 0.0
 
 
 def wilson_lb(wins: int, n: int, z: float = 1.96) -> float:
@@ -66,108 +73,135 @@ def wilson_lb(wins: int, n: int, z: float = 1.96) -> float:
     return centre - margin
 
 
-def _simulate_side(yes_bid: float, yes_ask: float, mid: float,
-                   hs: float, result: str, side: str) -> float | None:
-    """Return P&L in cents for one maker fill, or None if no simulated fill.
-
-    Fill condition (conservative): the closing bid/ask crossed our price.
-    We credit a fill when the natural market bid reaches our posted price.
-    """
-    if side == "yes":
-        our_price = mid - hs
-        # Our YES bid fills when someone wants to sell YES (hit our bid)
-        # Proxy: if result == 'yes', our bid was worth $1 → profit = 100 - our_price - fee
-        # If result == 'no', we lose our_price
-        pnl = (100 - our_price - MAKER_FEE_C) if result == "yes" else -(our_price + MAKER_FEE_C)
-    else:  # no
-        our_price = (100 - mid) - hs
-        pnl = (100 - our_price - MAKER_FEE_C) if result == "no" else -(our_price + MAKER_FEE_C)
-    return pnl
-
-
 def run_backtest(params: BacktestParams,
                  con: duckdb.DuckDBPyConnection) -> BacktestResult:
+    # One row per market: the FIRST candle with a real two-sided book in the quoting zone.
+    # yes_bid_open >= 10 and yes_ask_open <= 90 filter out empty-book candles
+    # (yb=0, ya=99 are "no market yet" states that give a misleading mid of 49.5c).
     rows = con.execute("""
-        SELECT ticker, ts, yes_bid_open, yes_ask_open, result, volume_usd,
-               open_time
+        WITH first_qualifying AS (
+            SELECT
+                ticker,
+                result,
+                yes_bid_open,
+                yes_ask_open,
+                (yes_bid_open + yes_ask_open) / 2.0 AS mid,
+                (yes_ask_open - yes_bid_open) AS spread,
+                open_time,
+                ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ts ASC) AS rn
+            FROM candles
+            WHERE series = ?
+              AND yes_bid_open >= 10
+              AND yes_ask_open <= 90
+              AND result IS NOT NULL
+              AND result != ''
+              AND volume_usd >= ?
+              AND (yes_bid_open + yes_ask_open) / 2.0 BETWEEN ? AND ?
+              AND (yes_ask_open - yes_bid_open) >= ?
+              AND (yes_ask_open - yes_bid_open) <= 50
+        )
+        SELECT ticker, result, yes_bid_open, yes_ask_open, mid, spread, open_time
+        FROM first_qualifying
+        WHERE rn = 1
+        ORDER BY open_time
+    """, [params.series, params.min_volume_usd,
+          params.mid_lo, params.mid_hi, params.min_spread_c]).fetchall()
+
+    # Zone coverage stats (all candles, not just first-qualifying)
+    zone_stats = con.execute("""
+        SELECT
+            AVG(yes_ask_open - yes_bid_open) AS avg_spread,
+            SUM(CASE WHEN (yes_bid_open + yes_ask_open)/2.0 BETWEEN ? AND ? THEN 1 ELSE 0 END) * 1.0
+                / COUNT(*) AS pct_in_zone
         FROM candles
         WHERE series = ?
-          AND yes_bid_open IS NOT NULL
-          AND yes_ask_open IS NOT NULL
-          AND result IS NOT NULL
-          AND result != ''
-          AND volume_usd >= ?
-        ORDER BY ts
-    """, [params.series, params.min_volume_usd]).fetchall()
+          AND yes_bid_open IS NOT NULL AND yes_ask_open IS NOT NULL
+    """, [params.mid_lo, params.mid_hi, params.series]).fetchone()
+    avg_spread_c = float(zone_stats[0] or 0)
+    pct_in_zone = float(zone_stats[1] or 0)
 
-    if len(rows) < 20:
+    if len(rows) < 10:
         return BacktestResult(
             series=params.series, params=params,
-            n_markets=0, n_trades=0, win_rate=0, avg_ev_c=0,
-            total_pnl_c=0, wilson_lb=-1, wilson_lb_h1=-1, wilson_lb_h2=-1,
+            n_markets=len(rows), n_trades=0, win_rate=0,
+            avg_bid_c=0, breakeven_wr=0, avg_ev_c=0, total_pnl_c=0,
+            wilson_lb=-1, wilson_lb_h1=-1, wilson_lb_h2=-1,
             verdict="INSUFFICIENT",
+            avg_spread_c=avg_spread_c, pct_in_zone=pct_in_zone,
         )
 
     pnls: list[float] = []
+    bids: list[float] = []
+    breakevens: list[float] = []
     wins = 0
     half = len(rows) // 2
     pnls_h1: list[float] = []
     pnls_h2: list[float] = []
-    market_set: set[str] = set()
+    wins_h1 = wins_h2 = 0
 
-    for i, (ticker, ts, yb, ya, result, vol, open_time) in enumerate(rows):
-        if yb is None or ya is None:
-            continue
-        mid = (yb + ya) / 2.0
-        spread = ya - yb
+    for i, (ticker, result, yb, ya, mid, spread, open_time) in enumerate(rows):
+        # Simulate YES fill at natural market bid
+        our_price = yb
+        be = (our_price + MAKER_FEE_C) / 100.0  # per-market break-even WR
+        if result == "yes":
+            pnl = 100 - our_price - MAKER_FEE_C
+            wins += 1
+            if i < half:
+                wins_h1 += 1
+            else:
+                wins_h2 += 1
+        else:
+            pnl = -(our_price + MAKER_FEE_C)
 
-        if spread < params.min_spread_c:
-            continue
-        if mid < params.mid_lo or mid > params.mid_hi:
-            continue
-
-        market_set.add(ticker)
-        target = pnls_h1 if i < half else pnls_h2
-
-        for side in ("yes", "no"):
-            pnl = _simulate_side(yb, ya, mid, params.half_spread_c, result, side)
-            if pnl is not None:
-                pnls.append(pnl)
-                target.append(pnl)
-                if pnl > 0:
-                    wins += 1
+        pnls.append(pnl)
+        bids.append(our_price)
+        breakevens.append(be)
+        if i < half:
+            pnls_h1.append(pnl)
+        else:
+            pnls_h2.append(pnl)
 
     n = len(pnls)
-    if n < 10:
-        return BacktestResult(
-            series=params.series, params=params,
-            n_markets=len(market_set), n_trades=n, win_rate=0, avg_ev_c=0,
-            total_pnl_c=0, wilson_lb=-1, wilson_lb_h1=-1, wilson_lb_h2=-1,
-            verdict="INSUFFICIENT",
-        )
-
     wr = wins / n
+    avg_bid = float(np.mean(bids))
+    breakeven = float(np.mean(breakevens))
+
+    # Wilson LB on WIN rate
     lb = wilson_lb(wins, n)
-    wins_h1 = sum(1 for p in pnls_h1 if p > 0)
-    wins_h2 = sum(1 for p in pnls_h2 if p > 0)
     lb_h1 = wilson_lb(wins_h1, len(pnls_h1)) if pnls_h1 else -1.0
     lb_h2 = wilson_lb(wins_h2, len(pnls_h2)) if pnls_h2 else -1.0
 
-    verdict = ("PASS" if lb > 0 and lb_h1 > 0 and lb_h2 > 0
-               else "FAIL" if n >= 50 else "INSUFFICIENT")
+    # PASS: WR beats breakeven in both halves, confirmed by Wilson LB > breakeven
+    def beats_breakeven(w: int, total: int) -> bool:
+        if total == 0:
+            return False
+        be = breakeven
+        # Wilson LB of win rate must exceed breakeven
+        return wilson_lb(w, total) > be
+
+    if n >= 50 and beats_breakeven(wins, n) and beats_breakeven(wins_h1, len(pnls_h1)) and beats_breakeven(wins_h2, len(pnls_h2)):
+        verdict = "PASS"
+    elif n >= 50:
+        verdict = "FAIL"
+    else:
+        verdict = "INSUFFICIENT"
 
     return BacktestResult(
         series=params.series,
         params=params,
-        n_markets=len(market_set),
+        n_markets=n,
         n_trades=n,
         win_rate=wr,
+        avg_bid_c=avg_bid,
+        breakeven_wr=breakeven,
         avg_ev_c=float(np.mean(pnls)),
         total_pnl_c=float(np.sum(pnls)),
         wilson_lb=lb,
         wilson_lb_h1=lb_h1,
         wilson_lb_h2=lb_h2,
         verdict=verdict,
+        avg_spread_c=avg_spread_c,
+        pct_in_zone=pct_in_zone,
     )
 
 
@@ -182,9 +216,13 @@ def sweep_all_series(half_spread_c: float = 3.0) -> list[BacktestResult]:
         p = BacktestParams(series=s, half_spread_c=half_spread_c)
         r = run_backtest(p, con)
         results.append(r)
-        log.info("  %-20s  n=%4d  WR=%.1f%%  EV=%.2fc  WilsonLB=%.3f  [%s]",
-                 s, r.n_trades, r.win_rate * 100,
-                 r.avg_ev_c, r.wilson_lb, r.verdict)
+        log.info(
+            "  %-20s  n=%4d  WR=%.1f%%  BE=%.1f%%  EV=%.2fc  "
+            "Spread=%.1fc  Zone=%.0f%%  LB=%.3f  [%s]",
+            s, r.n_trades, r.win_rate * 100, r.breakeven_wr * 100,
+            r.avg_ev_c, r.avg_spread_c, r.pct_in_zone * 100,
+            r.wilson_lb, r.verdict,
+        )
     con.close()
     return results
 
@@ -204,6 +242,18 @@ if __name__ == "__main__":
     results = sweep_all_series()
     save_results(results)
     passed = [r for r in results if r.verdict == "PASS"]
-    print(f"\nPASS: {len(passed)}/{len(results)}")
-    for r in sorted(passed, key=lambda x: -x.wilson_lb):
-        print(f"  {r.series:<20} WR={r.win_rate:.1%} EV={r.avg_ev_c:.2f}c LB={r.wilson_lb:.3f}")
+    failed = [r for r in results if r.verdict == "FAIL"]
+    print(f"\n{'='*70}")
+    print(f"PASS: {len(passed)}/{len(results)}  FAIL: {len(failed)}")
+    print(f"{'='*70}")
+    if passed:
+        print("\nPASS (sorted by EV):")
+        for r in sorted(passed, key=lambda x: -x.avg_ev_c):
+            print(f"  {r.series:<20} n={r.n_trades:4d}  WR={r.win_rate:.1%}  "
+                  f"BE={r.breakeven_wr:.1%}  EV={r.avg_ev_c:+.2f}c  "
+                  f"Spread={r.avg_spread_c:.1f}c  Zone={r.pct_in_zone:.0%}")
+    if failed:
+        print("\nFAIL:")
+        for r in sorted(failed, key=lambda x: -x.n_trades):
+            print(f"  {r.series:<20} n={r.n_trades:4d}  WR={r.win_rate:.1%}  "
+                  f"BE={r.breakeven_wr:.1%}  EV={r.avg_ev_c:+.2f}c")
